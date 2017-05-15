@@ -106,7 +106,7 @@ module Async::DNS
 			query_name = options[:name] || name
 			query_resource_class = options[:resource_class] || resource_class
 			
-			resolver.query(query_name, query_resource_class)
+			resolver.query(query_name, query_resource_class, options)
 		end
 		
 		# Respond to the given query with a resource record. The arguments to this function depend on the `resource_class` requested. This function instantiates the resource class with the supplied arguments, and then passes it to {#append!}.

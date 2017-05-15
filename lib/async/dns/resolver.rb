@@ -81,12 +81,12 @@ module Async::DNS
 		end
 
 		# Look up a named resource of the given resource_class.
-		def query(name, resource_class = Resolv::DNS::Resource::IN::A)
+		def query(name, resource_class = Resolv::DNS::Resource::IN::A, options)
 			message = Resolv::DNS::Message.new(next_id!)
 			message.rd = 1
 			message.add_question fully_qualified_name(name), resource_class
 			
-			dispatch_request(message)
+			dispatch_request(message, options)
 		end
 		
 		# Yields a list of `Resolv::IPv4` and `Resolv::IPv6` addresses for the given `name` and `resource_class`. Raises a ResolutionFailure if no severs respond.
@@ -133,9 +133,12 @@ module Async::DNS
 		end
 		
 		# Send the message to available servers. If no servers respond correctly, nil is returned. This result indicates a failure of the resolver to correctly contact any server and get a valid response.
-		def dispatch_request(message)
+		def dispatch_request(message, options)
 			request = Request.new(message, @servers)
 			context = Async::Task.current
+
+			@logger.debug "options: #{options}"
+			bind_host = options[:bind_host]
 			
 			request.each do |server|
 				@logger.debug "[#{message.id}] Sending request #{message.question.inspect} to server #{server.inspect}" if @logger
@@ -145,7 +148,7 @@ module Async::DNS
 					
 					context.timeout(@timeout) do
 						@logger.debug "[#{message.id}] -> Try server #{server}" if @logger
-						response = try_server(request, server)
+						response = try_server(request, server, bind_host)
 						@logger.debug "[#{message.id}] <- Try server #{server} = #{response}" if @logger
 					end
 					
@@ -183,12 +186,12 @@ module Async::DNS
 			end
 		end
 		
-		def try_server(request, server)
+		def try_server(request, server, bind_host)
 			case server[0]
 			when :udp
-				try_udp_server(request, server[1], server[2])
+				try_udp_server(request, server[1], server[2], bind_host)
 			when :tcp
-				try_tcp_server(request, server[1], server[2])
+				try_tcp_server(request, server[1], server[2], bind_host)
 			else
 				raise InvalidProtocolError.new(server)
 			end
@@ -207,17 +210,19 @@ module Async::DNS
 			
 			return false
 		end
-		
-		def udp_socket(family)
-			@udp_sockets[family] ||= UDPSocket.new(family)
+
+		def udp_socket(family, bind_host)
+			socket = UDPSocket.new(family)
+			socket.bind(bind_host, 0) if bind_host
+			return socket
 		end
 		
-		def try_udp_server(request, host, port)
+		def try_udp_server(request, host, port, bind_host)
 			context = Async::Task.current
 			
 			family = Async::DNS::address_family(host)
 			
-			context.with(UDPSocket.new(family)) do |socket|
+			context.with(udp_socket(family, bind_host)) do |socket|
 				socket.send(request.packet, 0, host, port)
 				
 				data, (_, remote_port) = socket.recvfrom(UDP_TRUNCATION_SIZE)
@@ -232,10 +237,10 @@ module Async::DNS
 			end
 		end
 		
-		def try_tcp_server(request, host, port)
+		def try_tcp_server(request, host, port, bind_host)
 			context = Async::Task.current
 			
-			context.with(TCPSocket.new(host, port)) do |socket|
+			context.with(TCPSocket.new(host, port, bind_address)) do |socket|
 				StreamTransport.write_chunk(socket, request.packet)
 				
 				input_data = StreamTransport.read_chunk(socket)
