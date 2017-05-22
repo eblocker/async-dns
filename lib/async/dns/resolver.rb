@@ -131,10 +131,12 @@ module Async::DNS
 				raise ResolutionFailure.new("Could not find any addresses for #{name}.")
 			end
 		end
-		
+
 		# Send the message to available servers. If no servers respond correctly, nil is returned. This result indicates a failure of the resolver to correctly contact any server and get a valid response.
 		def dispatch_request(message, options)
-			request = Request.new(message, @servers)
+			servers = servers_ordered(options[:order])
+			@logger.debug "ordered servers: #{servers}"
+			request = Request.new(message, servers)
 			context = Async::Task.current
 
 			@logger.debug "options: #{options}"
@@ -248,6 +250,23 @@ module Async::DNS
 				return Async::DNS::decode_message(input_data)
 			end
 		end
+
+		def servers_ordered(order)
+			case order
+			when :random
+				@servers.shuffle
+			when :round_robin
+				@servers.rotate(round_robin_next)
+			else
+				@servers
+			end
+		end
+
+		def round_robin_next
+			@round_robin_count = -1 unless @round_robin_count
+			@round_robin_count += 1
+		end
+
 		
 		# Manages a single DNS question message across one or more servers.
 		class Request
