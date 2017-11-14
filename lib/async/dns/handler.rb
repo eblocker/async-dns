@@ -22,10 +22,15 @@ require_relative 'transport'
 
 module Async::DNS
 	class GenericHandler
-		def initialize(server)
+		def initialize(server, endpoint)
 			@server = server
+			@endpoint = endpoint
+			
 			@logger = @server.logger || Async.logger
 		end
+		
+		attr :server
+		attr :endpoint
 		
 		def error_response(query = nil, code = Resolv::DNS::RCode::ServFail)
 			# Encoding may fail, so we need to handle this particular case:
@@ -61,27 +66,23 @@ module Async::DNS
 	end
 	
 	# Handling incoming UDP requests, which are single data packets, and pass them on to the given server.
-	class UDPHandler < GenericHandler
-		def run(socket, reactor:)
-			Async.logger.debug(self.class.name) {"-> Run on #{socket}..."}
-			
-			while true
-				Async.logger.debug(self.class.name) {"-> socket.recvfrom"}
-				input_data, (_, remote_port, remote_host) = socket.recvfrom(UDP_TRUNCATION_SIZE)
-				Async.logger.debug(self.class.name) {"<- socket.recvfrom"}
-				
-				reactor.async do
-					respond(socket, input_data, remote_host, remote_port)
+	class DatagramHandler < GenericHandler
+		def run(task: Async::Task.current)
+			@endpoint.bind do |socket|
+				while true
+					Async.logger.debug(self.class.name) {"-> socket.recvfrom"}
+					input_data, remote_address = socket.recvmsg(UDP_TRUNCATION_SIZE)
+					Async.logger.debug(self.class.name) {"<- socket.recvfrom"}
+					
+					task.async do
+						respond(socket, input_data, remote_address)
+					end
 				end
 			end
-		ensure
-			Async.logger.debug(self.class.name) {"<- Run ensure... #{$!}"}
 		end
 		
-		def respond(socket, input_data, remote_host, remote_port)
-			options = {peer: remote_host, port: remote_port, proto: :udp}
-			
-			response = process_query(input_data, options)
+		def respond(socket, input_data, remote_address)
+			response = process_query(input_data, remote_address: remote_address)
 			
 			output_data = response.encode
 			
@@ -97,7 +98,7 @@ module Async::DNS
 				output_data = truncation_error.encode
 			end
 			
-			socket.send(output_data, 0, remote_host, remote_port)
+			socket.sendmsg(output_data, 0, remote_address)
 		rescue IOError => error
 			@logger.warn "<> UDP response failed: #{error.inspect}!"
 		rescue EOFError => error
@@ -107,71 +108,19 @@ module Async::DNS
 		end
 	end
 	
-	class UDPSocketHandler < UDPHandler
-		def initialize(server, socket)
-			@socket = socket
-			
-			super(server)
-		end
-		
-		attr :socket
-		
-		def run(reactor: Async::Task.current.reactor)
-			reactor.async(self.socket) do |socket|
-				super(socket, reactor: reactor)
-			end
-		end
-	end
-	
-	class UDPServerHandler < UDPHandler
-		def initialize(server, host, port)
-			@host = host
-			@port = port
-			
-			super(server)
-		end
-		
-		attr :host
-		attr :port
-		
-		def run(reactor: Async::Task.current.reactor)
-			reactor.with(make_socket) do |socket|
-				super(socket, reactor: reactor)
-			end
-		end
-		
-		private
-		
-		def make_socket
-			family ||= Async::DNS::address_family(@host)
-			
-			socket = ::UDPSocket.new(family)
-			socket.bind(@host, @port)
-			
-			return socket
-		end
-	end
-	
-	class TCPHandler < GenericHandler
-		def run(socket, reactor:)
-			Async.logger.debug(self.class.name) {"-> Run on #{socket}..."}
-			
-			reactor.with(socket.accept) do |client|
+	class StreamHandler < GenericHandler
+		def run(task: Async::Task.current)
+			@endpoint.accept do |client, address|
 				handle_connection(client)
-			end while true
-		ensure
-			Async.logger.debug(self.class.name) {"<- Run ensure... #{$!}"}
+			end
 		end
 		
 		def handle_connection(socket)
 			context = Async::Task.current
 			
-			_, remote_port, remote_host = socket.io.peeraddr
-			options = {peer: remote_host, port: remote_port, proto: :tcp}
-			
 			input_data = StreamTransport.read_chunk(socket)
 			
-			response = process_query(input_data, options)
+			response = process_query(input_data, remote_address: socket.remote_address)
 			
 			length = StreamTransport.write_message(socket, response)
 			
@@ -184,46 +133,6 @@ module Async::DNS
 			@logger.warn "<> Error: TCP session failed due to broken pipe!"
 		rescue DecodeError
 			@logger.warn "<> Error: Could not decode incoming TCP data!"
-		end
-	end
-	
-	class TCPSocketHandler < TCPHandler
-		def initialize(server, socket)
-			@socket = socket
-			
-			super(server)
-		end
-		
-		attr :socket
-		
-		def run(reactor: Async::Task.current.reactor)
-			reactor.async(@socket) do |socket|
-				super(socket, reactor: reactor)
-			end
-		end
-	end
-	
-	class TCPServerHandler < TCPHandler
-		def initialize(server, host, port)
-			@host = host
-			@port = port
-			
-			super(server)
-		end
-		
-		attr :host
-		attr :port
-		
-		def run(reactor: Async::Task.current.reactor)
-			reactor.with(make_socket) do |socket|
-				super(socket, reactor: reactor)
-			end
-		end
-		
-		private
-		
-		def make_socket
-			::TCPServer.new(@host, @port)
 		end
 	end
 end

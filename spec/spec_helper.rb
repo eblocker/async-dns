@@ -23,32 +23,29 @@ if ENV['COVERAGE'] || ENV['TRAVIS']
 end
 
 require "bundler/setup"
-require "pry"
+require "async/rspec"
 require "async/dns"
-require "pp"
 
-RSpec.shared_context "reactor" do
-	let(:reactor) {Async::Reactor.new}
+begin
+	require 'ruby-prof'
 	
-	around(:each) do |example|
-		result = nil
-		
-		reactor.run do
-			result = example.run
-			
-			# Force the reactor to stop running if the result was an error.
-			if result.is_a? Exception
-				reactor.stop
+	RSpec.shared_context "profile" do
+		around(:each) do |example|
+			profile = RubyProf.profile(merge_fibers: true) do
+				example.run
 			end
+			
+			printer = RubyProf::FlatPrinter.new(profile)
+			printer.print(STDOUT)
 		end
-		
-		reactor.close
-		
-		result
+	end
+rescue LoadError
+	RSpec.shared_context "profile" do
+		before(:all) do
+			puts "Profiling not supported on this platform."
+		end
 	end
 end
-
-# abort "Warning, ulimit is too low!" if `ulimit -n`.to_i < 10000
 
 RSpec.configure do |config|
 	# Enable flags like --only-failures and --next-failure

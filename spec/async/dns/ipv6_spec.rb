@@ -34,11 +34,11 @@ module Async::DNS::IPv6Spec
 		end
 	end
 	
-	describe Async::DNS::TCPSocketHandler do
-		let(:server_interfaces) {[[:tcp, '::', 2004]]}
-		let(:server) {TestServer.new(listen: server_interfaces)}
+	describe Async::DNS::StreamHandler do
+		include_context Async::RSpec::Reactor
 		
-		include_context "reactor"
+		let(:server_interfaces) {[[:tcp, '::', 2004]]}
+		let(:server) {TestServer.new(server_interfaces)}
 		
 		it "should connect to the server using TCP via IPv6" do
 			task = server.run
@@ -55,11 +55,11 @@ module Async::DNS::IPv6Spec
 		end
 	end
 	
-	describe Async::DNS::UDPSocketHandler do
-		let(:server_interfaces) {[[:udp, '::', 2006]]}
-		let(:server) {TestServer.new(listen: server_interfaces)}
+	describe Async::DNS::DatagramHandler do
+		include_context Async::RSpec::Reactor
 		
-		include_context "reactor"
+		let(:server_interfaces) {[[:udp, '::', 2006]]}
+		let(:server) {TestServer.new(server_interfaces)}
 		
 		it "should connect to the server using UDP via IPv6" do
 			task = server.run
