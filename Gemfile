@@ -2,6 +2,9 @@ source 'https://rubygems.org'
 
 gemspec
 
+gem 'async-io', :git => 'ssh://git@bitbucket.hh.eblocker.com:7999/eb/async-dns.git', :branch => 'eblocker'
+#gem 'async-io', :path => '../async-io'
+
 group :development do
 	gem "pry"
 end
