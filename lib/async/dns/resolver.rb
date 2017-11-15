@@ -216,8 +216,8 @@ module Async::DNS
 		end
 		
 		def try_datagram_server(request, endpoint, bind_host, task: Async::Task.current)
-      endpoint.connect do |socket|
-        socket.bind(bind_host) if bind_host
+			local_address = bind_host && Async::IO::Address.udp(bind_host, 0)
+			endpoint.connect(local_address) do |socket|
 				socket.sendmsg(request.packet, 0)
 
 				data, peer = socket.recvmsg(UDP_TRUNCATION_SIZE)
@@ -227,8 +227,8 @@ module Async::DNS
 		end
 		
 		def try_stream_server(request, bind_host, endpoint)
-      endpoint.connect do |socket|
-        socket.bind(bind_host) if bind_host
+			local_address = bind_host && Async::IO::Address.udp(bind_host, 0)
+			endpoint.connect(local_address) do |socket|
 				StreamTransport.write_chunk(socket, request.packet)
 				
 				input_data = StreamTransport.read_chunk(socket)
