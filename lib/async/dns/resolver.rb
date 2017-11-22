@@ -154,10 +154,14 @@ module Async::DNS
 
 					task.timeout(@timeout) do
 						@logger.debug "[#{message.id}] -> Try address #{endpoint}" if @logger
+						start = Time.now
 						response = try_server(request, endpoint, bind_host)
+						elapsed = Time.now - start
+						counter.add_response_time(ip, elapsed) if counter
 						@logger.debug "[#{message.id}] <- Try address #{endpoint} = #{response}" if @logger
 					end
-					
+
+
 					if valid_response(message, response)
 						counter.incr_valid(ip) if counter
 						return response
