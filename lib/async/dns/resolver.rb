@@ -140,7 +140,7 @@ module Async::DNS
       @logger.debug "options: #{options}"
       bind_host = options[:bind_host]
 
-			counter = options[:counter]
+			log = options[:log]
 
       request = Request.new(message, endpoints)
 
@@ -149,7 +149,8 @@ module Async::DNS
 				
 				begin
 					ip = endpoint.address.ip_address
-
+					start = nil
+					elapsed = nil
 					response = nil
 
 					task.timeout(@timeout) do
@@ -157,30 +158,31 @@ module Async::DNS
 						start = Time.now
 						response = try_server(request, endpoint, bind_host)
 						elapsed = Time.now - start
-						counter.add_response_time(ip, elapsed) if counter
 						@logger.debug "[#{message.id}] <- Try address #{endpoint} = #{response}" if @logger
 					end
 
 
 					if valid_response(message, response)
-						counter.incr_valid(ip) if counter
+						log << [Time.now.to_f, ip, :valid, elapsed] if log
 						return response
+					else
+						log << [start.to_f, ip, :invalid] if log
 					end
 				rescue Async::TimeoutError
 					@logger.debug "[#{message.id}] Request timed out!" if @logger
-					counter.incr_timeout(ip) if counter
+					log << [Time.now.to_f, ip, :timeout] if log
 				rescue InvalidResponseError
 					@logger.warn "[#{message.id}] Invalid response from network: #{$!}!" if @logger
-					counter.incr_invalid(ip) if counter
+					log << [Time.now.to_f, ip, :invalid] if log
 				rescue DecodeError
 					@logger.warn "[#{message.id}] Error while decoding data from network: #{$!}!" if @logger
-					counter.incr_invalid(ip) if counter
+					log << [Time.now.to_f, ip, :invalid] if log
 				rescue IOError, Errno::ECONNRESET
 					@logger.warn "[#{message.id}] Error while reading from network: #{$!}!" if @logger
-					counter.incr_error(ip) if counter
+					log << [Time.now.to_f, ip, :error] if log
 				rescue EOFError
 					@logger.warn "[#{message.id}] Could not read complete response from network: #{$!}" if @logger
-					counter.incr_error(ip) if counter
+					log << [Time.now.to_f, ip, :error] if log
 				end
 			end
 			
