@@ -163,26 +163,26 @@ module Async::DNS
 
 
 					if valid_response(message, response)
-						log << [Time.now.to_f, ip, :valid, elapsed] if log
+						log << [Time.now, ip, :valid, elapsed] if log
 						return response
 					else
-						log << [start.to_f, ip, :invalid] if log
+						log << [start, ip, :invalid] if log
 					end
 				rescue Async::TimeoutError
 					@logger.debug "[#{message.id}] Request timed out!" if @logger
-					log << [Time.now.to_f, ip, :timeout] if log
+					log << [Time.now, ip, :timeout] if log
 				rescue InvalidResponseError
 					@logger.warn "[#{message.id}] Invalid response from network: #{$!}!" if @logger
-					log << [Time.now.to_f, ip, :invalid] if log
+					log << [Time.now, ip, :invalid] if log
 				rescue DecodeError
 					@logger.warn "[#{message.id}] Error while decoding data from network: #{$!}!" if @logger
-					log << [Time.now.to_f, ip, :invalid] if log
+					log << [Time.now, ip, :invalid] if log
 				rescue IOError, Errno::ECONNRESET
 					@logger.warn "[#{message.id}] Error while reading from network: #{$!}!" if @logger
-					log << [Time.now.to_f, ip, :error] if log
+					log << [Time.now, ip, :error] if log
 				rescue EOFError
 					@logger.warn "[#{message.id}] Could not read complete response from network: #{$!}" if @logger
-					log << [Time.now.to_f, ip, :error] if log
+					log << [Time.now, ip, :error] if log
 				end
 			end
 			
