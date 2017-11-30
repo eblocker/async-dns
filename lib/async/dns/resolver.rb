@@ -46,9 +46,9 @@ module Async::DNS
 		# Servers are specified in the same manor as options[:listen], e.g.
 		#   [:tcp/:udp, address, port]
 		# In the case of multiple servers, they will be checked in sequence.
-		def initialize(servers, origin: nil, logger: Async.logger, timeout: DEFAULT_TIMEOUT)
-			@servers = servers
-			
+		def initialize(endpoints, origin: nil, logger: Async.logger, timeout: DEFAULT_TIMEOUT)
+			@endpoints = endpoints
+
 			@origin = origin
 			@logger = logger
 			@timeout = timeout
@@ -97,14 +97,14 @@ module Async::DNS
 			retries = options.fetch(:retries, DEFAULT_RETRIES)
 			delay = options.fetch(:delay, DEFAULT_DELAY)
 			
-			records = lookup(name, resource_class, cache) do |name, resource_class|
+			records = lookup(name, resource_class, cache) do |lookup_name, lookup_resource_class|
 				response = nil
 				
 				retries.times do |i|
 					# Wait 10ms before trying again:
 					sleep delay if delay and i > 0
 					
-					response = query(name, resource_class)
+					response = query(lookup_name, lookup_resource_class)
 					
 					break if response
 				end
@@ -133,25 +133,25 @@ module Async::DNS
 		end
 
 		# Send the message to available servers. If no servers respond correctly, nil is returned. This result indicates a failure of the resolver to correctly contact any server and get a valid response.
-		def dispatch_request(message, options)
-			servers = servers_ordered(options[:order])
-			@logger.debug "ordered servers: #{servers}"
-			request = Request.new(message, servers)
-			context = Async::Task.current
+		def dispatch_request(message, options, task: Async::Task.current)
+      endpoints = servers_ordered(options[:order])
+      @logger.debug "ordered servers: #{endpoints}"
 
-			@logger.debug "options: #{options}"
-			bind_host = options[:bind_host]
-			
-			request.each do |server|
-				@logger.debug "[#{message.id}] Sending request #{message.question.inspect} to server #{server.inspect}" if @logger
+      @logger.debug "options: #{options}"
+      bind_host = options[:bind_host]
+
+      request = Request.new(message, endpoints)
+
+			request.each do |endpoint|
+				@logger.debug "[#{message.id}] Sending request #{message.question.inspect} to address #{endpoint.inspect}" if @logger
 				
 				begin
 					response = nil
 					
-					context.timeout(@timeout) do
-						@logger.debug "[#{message.id}] -> Try server #{server}" if @logger
-						response = try_server(request, server, bind_host)
-						@logger.debug "[#{message.id}] <- Try server #{server} = #{response}" if @logger
+					task.timeout(@timeout) do
+						@logger.debug "[#{message.id}] -> Try address #{endpoint}" if @logger
+						response = try_server(request, endpoint, bind_host)
+						@logger.debug "[#{message.id}] <- Try address #{endpoint} = #{response}" if @logger
 					end
 					
 					if valid_response(message, response)
@@ -163,8 +163,10 @@ module Async::DNS
 					@logger.warn "[#{message.id}] Invalid response from network: #{$!}!" if @logger
 				rescue DecodeError
 					@logger.warn "[#{message.id}] Error while decoding data from network: #{$!}!" if @logger
-				rescue IOError
+				rescue IOError, Errno::ECONNRESET
 					@logger.warn "[#{message.id}] Error while reading from network: #{$!}!" if @logger
+				rescue EOFError
+					@logger.warn "[#{message.id}] Could not read complete response from network: #{$!}" if @logger
 				end
 			end
 			
@@ -179,8 +181,8 @@ module Async::DNS
 				response = yield(name, resource_class)
 				
 				if response
-					response.answer.each do |name, ttl, record|
-						(records[name] ||= []) << record
+					response.answer.each do |name_in_answer, ttl, record|
+						(records[name_in_answer] ||= []) << record
 					end
 				end
 				
@@ -188,14 +190,14 @@ module Async::DNS
 			end
 		end
 		
-		def try_server(request, server, bind_host)
-			case server[0]
-			when :udp
-				try_udp_server(request, server[1], server[2], bind_host)
-			when :tcp
-				try_tcp_server(request, server[1], server[2], bind_host)
+		def try_server(request, endpoint, bind_host)
+			case endpoint.socket_type
+			when Socket::SOCK_DGRAM
+				try_datagram_server(request, endpoint, bind_host)
+			when Socket::SOCK_STREAM
+				try_stream_server(request, endpoint, bind_host)
 			else
-				raise InvalidProtocolError.new(server)
+				raise InvalidProtocolError.new(endpoint)
 			end
 		end
 		
@@ -212,37 +214,21 @@ module Async::DNS
 			
 			return false
 		end
-
-		def udp_socket(family, bind_host)
-			socket = UDPSocket.new(family)
-			socket.bind(bind_host, 0) if bind_host
-			return socket
-		end
 		
-		def try_udp_server(request, host, port, bind_host)
-			context = Async::Task.current
-			
-			family = Async::DNS::address_family(host)
-			
-			context.with(udp_socket(family, bind_host)) do |socket|
-				socket.send(request.packet, 0, host, port)
-				
-				data, (_, remote_port) = socket.recvfrom(UDP_TRUNCATION_SIZE)
-				# Need to check host, otherwise security issue.
-				
-				# May indicate some kind of spoofing attack:
-				if port != remote_port
-					raise InvalidResponseError.new("Data was not received from correct remote port (#{port} != #{remote_port})")
-				end
-				
+		def try_datagram_server(request, endpoint, bind_host, task: Async::Task.current)
+			local_address = bind_host && Async::IO::Address.udp(bind_host, 0)
+			endpoint.connect(local_address) do |socket|
+				socket.sendmsg(request.packet, 0)
+
+				data, peer = socket.recvmsg(UDP_TRUNCATION_SIZE)
+
 				return Async::DNS::decode_message(data)
 			end
 		end
 		
-		def try_tcp_server(request, host, port, bind_host)
-			context = Async::Task.current
-			
-			context.with(TCPSocket.new(host, port, bind_address)) do |socket|
+		def try_stream_server(request, bind_host, endpoint)
+			local_address = bind_host && Async::IO::Address.udp(bind_host, 0)
+			endpoint.connect(local_address) do |socket|
 				StreamTransport.write_chunk(socket, request.packet)
 				
 				input_data = StreamTransport.read_chunk(socket)
@@ -251,14 +237,20 @@ module Async::DNS
 			end
 		end
 
+		def bind(endpoint, bind_host)
+			endpoint.bind(bind_host) do |socket|
+				yield socket
+			end
+		end
+
 		def servers_ordered(order)
 			case order
 			when :random
-				@servers.shuffle
+				@endpoints.shuffle
 			when :round_robin
-				@servers.rotate(round_robin_next)
+				@endpoints.rotate(round_robin_next)
 			else
-				@servers
+				@endpoints
 			end
 		end
 
@@ -267,18 +259,18 @@ module Async::DNS
 			@round_robin_count += 1
 		end
 
-		
+
 		# Manages a single DNS question message across one or more servers.
 		class Request
-			def initialize(message, servers)
+			def initialize(message, endpoints)
 				@message = message
 				@packet = message.encode
 				
-				@servers = servers.dup
+				@endpoints = endpoints.dup
 				
 				# We select the protocol based on the size of the data:
 				if @packet.bytesize > UDP_TRUNCATION_SIZE
-					@servers.delete_if{|server| server[0] == :udp}
+					@endpoints.delete_if{|server| server[0] == :udp}
 				end
 			end
 			
@@ -287,12 +279,7 @@ module Async::DNS
 			attr :logger
 			
 			def each(&block)
-				@servers.each do |server|
-					# TODO: This seems odd...
-					next if @packet.bytesize > UDP_TRUNCATION_SIZE
-					
-					yield server
-				end
+				Async::IO::Endpoint.each(@endpoints, &block)
 			end
 
 			def update_id!(id)
