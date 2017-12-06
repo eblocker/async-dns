@@ -140,33 +140,49 @@ module Async::DNS
       @logger.debug "options: #{options}"
       bind_host = options[:bind_host]
 
+			log = options[:log]
+
       request = Request.new(message, endpoints)
 
 			request.each do |endpoint|
 				@logger.debug "[#{message.id}] Sending request #{message.question.inspect} to address #{endpoint.inspect}" if @logger
 				
 				begin
+					ip = endpoint.address.ip_address
+					start = nil
+					elapsed = nil
 					response = nil
-					
+
 					task.timeout(@timeout) do
 						@logger.debug "[#{message.id}] -> Try address #{endpoint}" if @logger
+						start = Time.now
 						response = try_server(request, endpoint, bind_host)
+						elapsed = Time.now - start
 						@logger.debug "[#{message.id}] <- Try address #{endpoint} = #{response}" if @logger
 					end
-					
+
+
 					if valid_response(message, response)
+						log << [Time.now, ip, :valid, elapsed] if log
 						return response
+					else
+						log << [start, ip, :invalid] if log
 					end
 				rescue Async::TimeoutError
 					@logger.debug "[#{message.id}] Request timed out!" if @logger
+					log << [Time.now, ip, :timeout] if log
 				rescue InvalidResponseError
 					@logger.warn "[#{message.id}] Invalid response from network: #{$!}!" if @logger
+					log << [Time.now, ip, :invalid] if log
 				rescue DecodeError
 					@logger.warn "[#{message.id}] Error while decoding data from network: #{$!}!" if @logger
-				rescue IOError, Errno::ECONNRESET
+					log << [Time.now, ip, :invalid] if log
+				rescue IOError, Errno::ECONNRESET, Errno::EHOSTUNREACH
 					@logger.warn "[#{message.id}] Error while reading from network: #{$!}!" if @logger
+					log << [Time.now, ip, :error] if log
 				rescue EOFError
 					@logger.warn "[#{message.id}] Could not read complete response from network: #{$!}" if @logger
+					log << [Time.now, ip, :error] if log
 				end
 			end
 			
