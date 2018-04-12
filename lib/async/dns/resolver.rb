@@ -177,11 +177,14 @@ module Async::DNS
 				rescue DecodeError
 					@logger.warn "[#{message.id}] Error while decoding data from network: #{$!}!" if @logger
 					log << [Time.now, ip, :invalid] if log
-				rescue IOError, Errno::ECONNRESET, Errno::EHOSTUNREACH
+				rescue IOError, Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EHOSTUNREACH, Errno::ENETUNREACH, Errno::ENOPROTOOPT
 					@logger.warn "[#{message.id}] Error while reading from network: #{$!}!" if @logger
 					log << [Time.now, ip, :error] if log
 				rescue EOFError
 					@logger.warn "[#{message.id}] Could not read complete response from network: #{$!}" if @logger
+					log << [Time.now, ip, :error] if log
+				rescue
+					@logger.warn "[#{message.id}] Unexpected error: #{$!}!" if @logger
 					log << [Time.now, ip, :error] if log
 				end
 			end
