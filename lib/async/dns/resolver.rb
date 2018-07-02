@@ -137,7 +137,7 @@ module Async::DNS
       endpoints = servers_ordered(options[:order])
       @logger.debug "ordered servers: #{endpoints}"
 
-      @logger.debug "options: #{options}"
+      @logger.debug { "options: #{options}" }
       bind_host = options[:bind_host]
 
 			log = options[:log]
