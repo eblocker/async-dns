@@ -145,7 +145,11 @@ module Async::DNS
       request = Request.new(message, endpoints)
 
 			request.each do |endpoint|
-				@logger.debug "[#{message.id}] Sending request #{message.question.inspect} to address #{endpoint.inspect}" if @logger
+				begin
+					@logger.debug "[#{message.id}] Sending request #{message.question.inspect} to address #{endpoint.inspect}" if @logger
+				rescue Encoding::CompatibilityError
+					@logger.debug "[#{message.id}] failed to log message question via inspect due to Encoding::CompatibilityError on ruby #{RUBY_VERSION}. Fixed in ruby >= 2.3" if @logger
+				end
 				
 				begin
 					ip = endpoint.address.ip_address
