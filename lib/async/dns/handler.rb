@@ -82,6 +82,8 @@ module Async::DNS
 		end
 		
 		def respond(socket, input_data, remote_address)
+			verify_address(remote_address)
+
 			response = process_query(input_data, remote_address: remote_address)
 			
 			output_data = response.encode
@@ -105,6 +107,12 @@ module Async::DNS
 			@logger.warn "<> UDP session ended prematurely: #{error.inspect}!"
 		rescue DecodeError
 			@logger.warn "<> Could not decode incoming UDP data!"
+		end
+
+		def verify_address(address)
+			if address.ip_port == 0
+				raise IOError.new("Invalid address #{address.inspect}. Port is zero.")
+			end
 		end
 	end
 	
