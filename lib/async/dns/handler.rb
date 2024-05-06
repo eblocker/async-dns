@@ -18,19 +18,21 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
+require 'async/io/stream'
+
 require_relative 'transport'
 
 module Async::DNS
 	class GenericHandler
-		def initialize(server, endpoint)
+		def initialize(server, socket)
 			@server = server
-			@endpoint = endpoint
+			@socket = socket
 			
-			@logger = @server.logger || Async.logger
+			@logger = @server.logger || Console.logger
 		end
 		
 		attr :server
-		attr :endpoint
+		attr :socket
 		
 		def error_response(query = nil, code = Resolv::DNS::RCode::ServFail)
 			# Encoding may fail, so we need to handle this particular case:
@@ -57,8 +59,7 @@ module Async::DNS
 				
 				return @server.process_query(query, options)
 			rescue StandardError => error
-				@logger.error "<> Error processing request: #{error.inspect}!"
-				Async::DNS::log_exception(@logger, error)
+				@logger.error(self) { error }
 				
 				return error_response(query)
 			end
@@ -68,15 +69,11 @@ module Async::DNS
 	# Handling incoming UDP requests, which are single data packets, and pass them on to the given server.
 	class DatagramHandler < GenericHandler
 		def run(task: Async::Task.current)
-			@endpoint.bind do |socket|
-				while true
-					Async.logger.debug(self.class.name) {"-> socket.recvfrom"}
-					input_data, remote_address = socket.recvmsg(UDP_TRUNCATION_SIZE)
-					Async.logger.debug(self.class.name) {"<- socket.recvfrom"}
-					
-					task.async do
-						respond(socket, input_data, remote_address)
-					end
+			while true
+				input_data, remote_address = @socket.recvmsg(UDP_TRUNCATION_SIZE)
+				
+				task.async do
+					respond(@socket, input_data, remote_address)
 				end
 			end
 		end
@@ -91,7 +88,7 @@ module Async::DNS
 			@logger.debug "<#{response.id}> Writing #{output_data.bytesize} bytes response to client via UDP..."
 			
 			if output_data.bytesize > UDP_TRUNCATION_SIZE
-				@logger.warn "<#{response.id}>Response via UDP was larger than #{UDP_TRUNCATION_SIZE}!"
+				@logger.warn "<#{response.id}> Response via UDP was larger than #{UDP_TRUNCATION_SIZE}!"
 				
 				# Reencode data with truncation flag marked as true:
 				truncation_error = Resolv::DNS::Message.new(response.id)
@@ -117,22 +114,23 @@ module Async::DNS
 	end
 	
 	class StreamHandler < GenericHandler
-		def run(task: Async::Task.current)
-			@endpoint.accept do |client, address|
+		def run(backlog = Socket::SOMAXCONN)
+			@socket.listen(backlog)
+			
+			@socket.accept_each do |client, address|
 				handle_connection(client)
 			end
 		end
 		
 		def handle_connection(socket)
-			context = Async::Task.current
+			transport = Transport.new(socket)
 			
-			input_data = StreamTransport.read_chunk(socket)
-			
-			response = process_query(input_data, remote_address: socket.remote_address)
-			
-			length = StreamTransport.write_message(socket, response)
-			
-			@logger.debug "<#{response.id}> Wrote #{length} bytes via TCP..."
+			while input_data = transport.read_chunk
+				response = process_query(input_data, remote_address: socket.remote_address)
+				length = transport.write_message(response)
+				
+				@logger.debug "<#{response.id}> Wrote #{length} bytes via TCP..."
+			end
 		rescue EOFError => error
 			@logger.warn "<> Error: TCP session ended prematurely!"
 		rescue Errno::ECONNRESET => error

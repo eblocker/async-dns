@@ -46,7 +46,7 @@ module Async::DNS
 		# Servers are specified in the same manor as options[:listen], e.g.
 		#   [:tcp/:udp, address, port]
 		# In the case of multiple servers, they will be checked in sequence.
-		def initialize(endpoints, origin: nil, logger: Async.logger, timeout: DEFAULT_TIMEOUT)
+		def initialize(endpoints, origin: nil, logger: Console.logger, timeout: DEFAULT_TIMEOUT)
 			@endpoints = endpoints
 
 			@origin = origin
@@ -134,30 +134,26 @@ module Async::DNS
 
 		# Send the message to available servers. If no servers respond correctly, nil is returned. This result indicates a failure of the resolver to correctly contact any server and get a valid response.
 		def dispatch_request(message, options, task: Async::Task.current)
-      endpoints = servers_ordered(options[:order])
-      @logger.debug "ordered servers: #{endpoints}"
+			endpoints = servers_ordered(options[:order])
+			@logger.debug "ordered servers: #{endpoints}"
 
-      @logger.debug { "options: #{options}" }
-      bind_host = options[:bind_host]
+			@logger.debug { "options: #{options}" }
+			bind_host = options[:bind_host]
 
 			log = options[:log]
 
-      request = Request.new(message, endpoints)
+			request = Request.new(message, endpoints)
 
 			request.each do |endpoint|
-				begin
-					@logger.debug "[#{message.id}] Sending request #{message.question.inspect} to address #{endpoint.inspect}" if @logger
-				rescue Encoding::CompatibilityError
-					@logger.debug "[#{message.id}] failed to log message question via inspect due to Encoding::CompatibilityError on ruby #{RUBY_VERSION}. Fixed in ruby >= 2.3" if @logger
-				end
+				@logger.debug "[#{message.id}] Sending request #{message.question.inspect} to address #{endpoint.inspect}" if @logger
 				
 				begin
 					ip = endpoint.address.ip_address
 					start = nil
 					elapsed = nil
 					response = nil
-
-					task.timeout(@timeout) do
+					
+					task.with_timeout(@timeout) do
 						@logger.debug "[#{message.id}] -> Try address #{endpoint}" if @logger
 						start = Time.now
 						response = try_server(request, endpoint, bind_host)
@@ -214,13 +210,16 @@ module Async::DNS
 		end
 		
 		def try_server(request, endpoint, bind_host)
-			case endpoint.socket_type
-			when Socket::SOCK_DGRAM
-				try_datagram_server(request, endpoint, bind_host)
-			when Socket::SOCK_STREAM
-				try_stream_server(request, endpoint, bind_host)
-			else
-				raise InvalidProtocolError.new(endpoint)
+			local_address = bind_host && Async::IO::Address.udp(bind_host, 0)
+			endpoint.connect(local_address) do |socket|
+				case socket.type
+				when Socket::SOCK_DGRAM
+					try_datagram_server(request, socket)
+				when Socket::SOCK_STREAM
+					try_stream_server(request, socket)
+				else
+					raise InvalidProtocolError.new(endpoint)
+				end
 			end
 		end
 		
@@ -230,7 +229,7 @@ module Async::DNS
 			elsif response.id != message.id
 				@logger.warn "[#{message.id}] Received response with incorrect message id: #{response.id}!" if @logger
 			else
-				@logger.debug "[#{message.id}] Received valid response with #{response.answer.count} answer(s)." if @logger
+				@logger.debug "[#{message.id}] Received valid response with #{response.answer.size} answer(s)." if @logger
 				
 				return true
 			end
@@ -238,26 +237,22 @@ module Async::DNS
 			return false
 		end
 		
-		def try_datagram_server(request, endpoint, bind_host, task: Async::Task.current)
-			local_address = bind_host && Async::IO::Address.udp(bind_host, 0)
-			endpoint.connect(local_address) do |socket|
-				socket.sendmsg(request.packet, 0)
-
-				data, peer = socket.recvmsg(UDP_TRUNCATION_SIZE)
-
-				return Async::DNS::decode_message(data)
-			end
+		def try_datagram_server(request, socket)
+			socket.sendmsg(request.packet, 0)
+			
+			data, peer = socket.recvmsg(UDP_TRUNCATION_SIZE)
+			
+			return Async::DNS::decode_message(data)
 		end
 		
-		def try_stream_server(request, bind_host, endpoint)
-			local_address = bind_host && Async::IO::Address.udp(bind_host, 0)
-			endpoint.connect(local_address) do |socket|
-				StreamTransport.write_chunk(socket, request.packet)
-				
-				input_data = StreamTransport.read_chunk(socket)
-				
-				return Async::DNS::decode_message(input_data)
-			end
+		def try_stream_server(request, socket)
+			transport = Transport.new(socket)
+			
+			transport.write_chunk(request.packet)
+			
+			input_data = transport.read_chunk
+			
+			return Async::DNS::decode_message(input_data)
 		end
 
 		def bind(endpoint, bind_host)
