@@ -148,7 +148,7 @@ module Async::DNS
 				@logger.debug "[#{message.id}] Sending request #{message.question.inspect} to address #{endpoint.inspect}" if @logger
 				
 				begin
-					ip = endpoint.address.ip_address
+					ip = endpoint.address[0]
 					start = nil
 					elapsed = nil
 					response = nil
@@ -183,9 +183,10 @@ module Async::DNS
 				rescue EOFError
 					@logger.warn "[#{message.id}] Could not read complete response from network: #{$!}" if @logger
 					log << [Time.now, ip, :error] if log
-				rescue
+				rescue => e
 					@logger.warn "[#{message.id}] Unexpected error: #{$!}!" if @logger
 					log << [Time.now, ip, :error] if log
+					Console::Event::Failure.for(e).emit(self, "Unexpected error")
 				end
 			end
 			
@@ -210,8 +211,8 @@ module Async::DNS
 		end
 		
 		def try_server(request, endpoint, bind_host)
-			local_address = bind_host && Async::IO::Address.udp(bind_host, 0)
-			endpoint.connect(local_address) do |socket|
+			endpoint = endpoint_for_local_address(endpoint, bind_host)
+			endpoint.connect do |socket|
 				case socket.type
 				when Socket::SOCK_DGRAM
 					try_datagram_server(request, socket)
@@ -222,7 +223,19 @@ module Async::DNS
 				end
 			end
 		end
-		
+
+		def endpoint_for_local_address(endpoint, bind_host)
+			if bind_host
+				case endpoint.address[3]
+				when Socket::SOCK_DGRAM
+					return endpoint.with(local_address: Async::IO::Address.udp(bind_host, 0))
+				when Socket::SOCK_STREAM
+					return endpoint.with(local_address: Async::IO::Address.tcp(bind_host, 0))
+				end
+			end
+			return endpoint
+		end
+
 		def valid_response(message, response)
 			if response.tc != 0
 				@logger.warn "[#{message.id}] Received truncated response!" if @logger
